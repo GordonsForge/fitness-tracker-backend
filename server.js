@@ -2,13 +2,14 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const { body, validationResult } = require('express-validator');
+const axios = require('axios');
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// CORS – Allow localhost + your live site
 app.use(cors({
   origin: [
     'http://localhost:3000',
@@ -20,12 +21,16 @@ app.use(cors({
 
 app.use(express.json());
 
-// Health check – prevents Vercel cold start issues
+// Health Check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Backend is live!', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'OK',
+    message: 'Backend is live!',
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Full workouts object (copied from frontend)
+// === FULL MOCK WORKOUTS DATA (Fallback) ===
 const workouts = {
   'Build Muscle': {
     beginner: {
@@ -116,7 +121,7 @@ const workouts = {
   }
 };
 
-// POST /api/suggestions – with full validation
+// === GEMINI AI + FALLBACK ===
 app.post('/api/suggestions',
   [
     body('goal').isIn(['Build Muscle', 'Build Endurance', 'Build Strength']).withMessage('Invalid goal'),
@@ -124,25 +129,43 @@ app.post('/api/suggestions',
     body('bodyPart').isIn(['abs', 'chest', 'back', 'legs', 'arms', 'shoulders', 'glutes']).withMessage('Invalid body part'),
     body('bmi').optional().isFloat({ min: 10, max: 50 }).withMessage('BMI must be between 10 and 50')
   ],
-  (req, res) => {
+  async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
     }
 
-    const { goal, fitnessLevel, bodyPart } = req.body;
-    const exercises = workouts[goal]?.[fitnessLevel]?.[bodyPart] || [];
+    const { goal, fitnessLevel, bodyPart, bmi } = req.body;
 
-    if (exercises.length === 0) {
-      return res.status(404).json({ message: 'No exercises found for this selection' });
+    const prompt = `Generate 5 ${fitnessLevel} ${goal} exercises for ${bodyPart}. BMI: ${bmi || 'unknown'}. No equipment. Safe. Return ONLY JSON array like: ["3x10 Push-Ups"]`;
+
+    try {
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        {
+          contents: [{ role: 'user', parts: [{ text: prompt }] }]
+        },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+
+      let text = response.data.candidates[0].content.parts[0].text;
+      text = text.replace(/```json|```/g, '').trim();
+      let suggestions = JSON.parse(text);
+      if (!Array.isArray(suggestions)) suggestions = [suggestions];
+
+      res.json({ suggestions: suggestions.slice(0, 5) });
+    } catch (err) {
+      console.error('Gemini Error:', err.message);
+
+      // Fallback to mock data
+      const exercises = workouts[goal]?.[fitnessLevel]?.[bodyPart] || [];
+      const fallback = exercises.sort(() => 0.5 - Math.random()).slice(0, 5);
+      res.json({ suggestions: fallback, note: 'AI offline – using mock data' });
     }
-
-    const suggestions = exercises.sort(() => 0.5 - Math.random()).slice(0, 5);
-    res.json({ suggestions });
   }
 );
 
-// Start server
+// Start Server
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/api/health`);
