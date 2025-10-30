@@ -121,7 +121,7 @@ const workouts = {
   }
 };
 
-// === GEMINI AI + FALLBACK ===
+// === GEMINI AI + FALLBACK (UPGRADED TO gemini-2.0-flash-exp) ===
 app.post('/api/suggestions',
   [
     body('goal').isIn(['Build Muscle', 'Build Endurance', 'Build Strength']).withMessage('Invalid goal'),
@@ -141,7 +141,7 @@ app.post('/api/suggestions',
 
     try {
       const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${process.env.GEMINI_API_KEY}`,
         {
           contents: [{ role: 'user', parts: [{ text: prompt }] }]
         },
