@@ -27,10 +27,16 @@ app.use(cors({
 
 app.use(express.json());
 
-// === MONGODB CONNECT ===
+// === MONGODB CONNECT WITH DEBUG ===
 mongoose.connect(MONGO_URI)
-  .then(() => console.log('MongoDB Connected'))
-  .catch(err => console.error('MongoDB Error:', err));
+  .then(() => {
+    const dbName = MONGO_URI.split('/').pop().split('?')[0];
+    console.log('MongoDB Connected');
+    console.log(`Database: ${dbName}`);
+  })
+  .catch(err => {
+    console.error('MongoDB Connection Failed:', err.message);
+  });
 
 // === USER SCHEMA ===
 const userSchema = new mongoose.Schema({
@@ -144,76 +150,128 @@ const workouts = {
   }
 };
 
-// === AUTH ROUTES ===
+// === FIXED: AUTH ROUTES ===
 app.post('/api/register', [
-  body('email').isEmail(),
-  body('password').isLength({ min: 6 })
+  body('email').isEmail().withMessage('Invalid email'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be 6+ characters')
 ], async (req, res) => {
   const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ message: 'Invalid input' });
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ message: errors.array()[0].msg });
+  }
 
   const { email, password } = req.body;
   const hashed = crypto.createHash('sha256').update(password).digest('hex');
 
   try {
-    const user = await User.create({ email, password: hashed, workouts: [], goal: {} });
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ message: 'User already exists' });
+    }
+
+    const user = await User.create({
+      email,
+      password: hashed,
+      workouts: [],
+      goal: {}
+    });
+
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { email: user.email } });
+    res.json({ token, user: { _id: user._id, email: user.email } });
   } catch (err) {
-    res.status(400).json({ message: 'User exists' });
+    console.error('Register error:', err.message);
+    if (err.code === 11000) {
+      return res.status(400).json({ message: 'User already exists' });
+    }
+    res.status(500).json({ message: 'Server error. Please try again.' });
   }
 });
 
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ message: 'Email and password required' });
+  }
+
   const hashed = crypto.createHash('sha256').update(password).digest('hex');
   const user = await User.findOne({ email, password: hashed });
   if (!user) return res.status(401).json({ message: 'Invalid credentials' });
 
   const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: { email: user.email, goal: user.goal } });
+  res.json({ token, user: { _id: user._id, email: user.email, goal: user.goal } });
 });
 
 // === GOAL ROUTES ===
 app.post('/api/goal', authenticate, async (req, res) => {
   const { goal, level, bodyPart, bmi, noEquipment } = req.body;
-  await User.updateOne(
-    { _id: req.userId },
-    { $set: { 'goal': { goal, level, bodyPart, bmi, noEquipment } } }
-  );
-  res.json({ message: 'Goal saved' });
+  try {
+    await User.updateOne(
+      { _id: req.userId },
+      { $set: { goal: { goal, level, bodyPart, bmi, noEquipment } } }
+    );
+    res.json({ message: 'Goal saved' });
+  } catch (err) {
+    console.error('Goal save error:', err);
+    res.status(500).json({ message: 'Failed to save goal' });
+  }
 });
 
 app.get('/api/goal', authenticate, async (req, res) => {
-  const user = await User.findById(req.userId);
-  res.json(user.goal);
+  try {
+    const user = await User.findById(req.userId);
+    res.json(user.goal || {});
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch goal' });
+  }
 });
 
 // === WORKOUT ROUTES ===
 app.post('/api/workout', authenticate, async (req, res) => {
   const { text } = req.body;
-  await User.updateOne(
-    { _id: req.userId },
-    { $push: { workouts: { text, completed: false, timestamp: new Date().toISOString() } } }
-  );
-  res.json({ message: 'Logged' });
+  if (!text) return res.status(400).json({ message: 'Workout text required' });
+
+  try {
+    await User.updateOne(
+      { _id: req.userId },
+      { $push: { workouts: { text, completed: false, timestamp: new Date().toISOString() } } }
+    );
+    res.json({ message: 'Logged' });
+  } catch (err) {
+    console.error('Workout log error:', err);
+    res.status(500).json({ message: 'Failed to log workout' });
+  }
 });
 
 app.post('/api/complete', authenticate, async (req, res) => {
   const { timestamp } = req.body;
-  await User.updateOne(
-    { _id: req.userId, 'workouts.timestamp': timestamp },
-    { $set: { 'workouts.$.completed': true } }
-  );
-  res.json({ message: 'Completed' });
+  if (!timestamp) return res.status(400).json({ message: 'Timestamp required' });
+
+  try {
+    const result = await User.updateOne(
+      { _id: req.userId, 'workouts.timestamp': timestamp },
+      { $set: { 'workouts.$.completed': true } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: 'Workout not found' });
+    }
+    res.json({ message: 'Completed' });
+  } catch (err) {
+    console.error('Complete error:', err);
+    res.status(500).json({ message: 'Failed to complete workout' });
+  }
 });
 
 app.get('/api/workouts', authenticate, async (req, res) => {
-  const user = await User.findById(req.userId);
-  res.json(user.workouts);
+  try {
+    const user = await User.findById(req.userId);
+    res.json(user.workouts || []);
+  } catch (err) {
+    console.error('Fetch workouts error:', err);
+    res.status(500).json({ message: 'Failed to fetch workouts' });
+  }
 });
 
-// === NEW: AI INSIGHTS AFTER 3+ COMPLETED WORKOUTS ===
+// === AI INSIGHTS AFTER 3+ COMPLETED WORKOUTS ===
 app.get('/api/insights', authenticate, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
@@ -240,9 +298,8 @@ app.get('/api/insights', authenticate, async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 });
-// === END NEW ===
 
-// === AI SUGGESTIONS + INSIGHTS ===
+// === AI SUGGESTIONS ===
 app.post('/api/suggestions',
   [
     body('goal').isIn(['Build Muscle', 'Build Endurance', 'Build Strength']),
@@ -254,12 +311,11 @@ app.post('/api/suggestions',
   authenticate,
   async (req, res) => {
     const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ message: 'Validation failed' });
+    if (!errors.isEmpty()) return res.status(400).json({ message: 'Invalid input' });
 
     const { goal, fitnessLevel, bodyPart, bmi, noEquipment } = req.body;
     const user = await User.findById(req.userId);
     const pastWorkouts = user.workouts.slice(-10).map(w => w.text).join(', ') || 'None';
-
     const safeNoEquipment = bmi > 25 || noEquipment;
 
     const prompt = `
@@ -289,22 +345,13 @@ Return ONLY JSON array: ["3x12 Push-Ups"]`;
   }
 );
 
-// Helper: Categorize workout
-function categorize(text) {
-  const t = text.toLowerCase();
-  if (t.includes('push') || t.includes('bench') || t.includes('chest')) return 'chest';
-  if (t.includes('pull') || t.includes('row') || t.includes('back')) return 'back';
-  if (t.includes('squat') || t.includes('lunge') || t.includes('leg')) return 'legs';
-  if (t.includes('run') || t.includes('jog') || t.includes('cardio')) return 'cardio';
-  return 'other';
-}
-
 // === HEALTH CHECK ===
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'OK',
     message: 'Backend is live!',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    db: MONGO_URI ? 'Connected' : 'Not connected'
   });
 });
 
