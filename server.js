@@ -213,6 +213,35 @@ app.get('/api/workouts', authenticate, async (req, res) => {
   res.json(user.workouts);
 });
 
+// === NEW: AI INSIGHTS AFTER 3+ COMPLETED WORKOUTS ===
+app.get('/api/insights', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const completedCount = user.workouts.filter(w => w.completed).length;
+    if (completedCount < 3) {
+      return res.json({ insights: null });
+    }
+
+    const goal = user.goal;
+    const insights = [
+      `Great job on ${completedCount} workouts! You're on fire!`,
+      `Focus: ${goal?.bodyPart || 'Full Body'} – Keep pushing!`,
+      `Tip: Increase weight by 5% next session to break plateaus.`,
+      `You're ${((completedCount / 7) * 100).toFixed(0)}% to weekly mastery!`,
+      `Pro move: Add 1 drop set to your last exercise.`,
+      `Your BMI: ${goal?.bmi?.toFixed(1) || 'N/A'} – Stay consistent!`
+    ];
+
+    res.json({ insights: insights.join(' | ') });
+  } catch (err) {
+    console.error('Insights error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+// === END NEW ===
+
 // === AI SUGGESTIONS + INSIGHTS ===
 app.post('/api/suggestions',
   [
@@ -251,24 +280,11 @@ Return ONLY JSON array: ["3x12 Push-Ups"]`;
       let suggestions = JSON.parse(text);
       if (!Array.isArray(suggestions)) suggestions = [suggestions];
 
-      // === AI INSIGHTS (7+ workouts) ===
-      let insights = '';
-      if (user.workouts.length >= 7) {
-        const counts = {};
-        user.workouts.forEach(w => {
-          const cat = categorize(w.text);
-          counts[cat] = (counts[cat] || 0) + 1;
-        });
-        const max = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-        const min = Object.entries(counts).sort((a, b) => a[1] - b[1])[0];
-        insights = `You're strongest in ${max[0]} (${max[1]}x). ${min[0] === 'cardio' ? 'Add 1 run!' : 'Balance with ' + min[0]}`;
-      }
-
-      res.json({ suggestions: suggestions.slice(0, 5), insights: insights || null });
+      res.json({ suggestions: suggestions.slice(0, 5) });
     } catch (err) {
       console.error('Gemini Error:', err.message);
       const fallback = workouts[goal][fitnessLevel][bodyPart].sort(() => 0.5 - Math.random()).slice(0, 5);
-      res.json({ suggestions: fallback, insights: null, note: 'AI offline' });
+      res.json({ suggestions: fallback, note: 'AI offline' });
     }
   }
 );
