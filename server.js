@@ -121,13 +121,14 @@ const workouts = {
   }
 };
 
-// === GEMINI AI + FALLBACK (UPGRADED TO gemini-2.0-flash-exp) ===
+// === GEMINI AI + FALLBACK (ADAPTIVE: NO EQUIPMENT IF REQUESTED OR HIGH BMI) ===
 app.post('/api/suggestions',
   [
     body('goal').isIn(['Build Muscle', 'Build Endurance', 'Build Strength']).withMessage('Invalid goal'),
     body('fitnessLevel').isIn(['beginner', 'intermediate', 'advanced']).withMessage('Invalid fitness level'),
     body('bodyPart').isIn(['abs', 'chest', 'back', 'legs', 'arms', 'shoulders', 'glutes']).withMessage('Invalid body part'),
-    body('bmi').optional().isFloat({ min: 10, max: 50 }).withMessage('BMI must be between 10 and 50')
+    body('bmi').optional().isFloat({ min: 10, max: 50 }).withMessage('BMI must be between 10 and 50'),
+    body('noEquipment').optional().isBoolean().withMessage('noEquipment must be true or false')
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -135,9 +136,13 @@ app.post('/api/suggestions',
       return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
     }
 
-    const { goal, fitnessLevel, bodyPart, bmi } = req.body;
+    const { goal, fitnessLevel, bodyPart, bmi, noEquipment } = req.body;
 
-    const prompt = `Generate 5 ${fitnessLevel} ${goal} exercises for ${bodyPart}. BMI: ${bmi || 'unknown'}. No equipment. Safe. Return ONLY JSON array like: ["3x10 Push-Ups"]`;
+    const prompt = `
+Generate 5 ${fitnessLevel}-level ${goal} exercises for ${bodyPart}.
+BMI: ${bmi || 'unknown'}${noEquipment === true ? '. NO equipment allowed.' : ''}.
+${bmi > 25 ? 'Avoid high-impact. Prefer no-equipment.' : (noEquipment === true ? 'NO equipment.' : 'Equipment allowed if safe and effective.')}
+Return ONLY JSON array like: ["3x12 Push-Ups"]`;
 
     try {
       const response = await axios.post(
