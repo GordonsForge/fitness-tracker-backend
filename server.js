@@ -3,34 +3,57 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const { body, validationResult } = require('express-validator');
 const axios = require('axios');
+const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const MONGO_URI = process.env.MONGO_URI;
+const JWT_SECRET = process.env.JWT_SECRET || 'forgezone-secret-2025';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-// CORS – Allow localhost + your live site
+// === CORS ===
 app.use(cors({
   origin: [
     'http://localhost:3000',
     'https://forgezone.netlify.app'
   ],
   methods: ['GET', 'POST'],
-  credentials: false
+  credentials: true
 }));
 
 app.use(express.json());
 
-// Health Check
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    message: 'Backend is live!',
-    timestamp: new Date().toISOString()
-  });
-});
+// === MONGODB CONNECT ===
+mongoose.connect(MONGO_URI)
+  .then(() => console.log('MongoDB Connected'))
+  .catch(err => console.error('MongoDB Error:', err));
 
-// === FULL MOCK WORKOUTS DATA (Fallback) ===
+// === USER SCHEMA ===
+const userSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  workouts: [{ text: String, completed: Boolean, timestamp: String }],
+  goal: { goal: String, level: String, bodyPart: String, bmi: Number, noEquipment: Boolean }
+});
+const User = mongoose.model('User', userSchema);
+
+// === AUTH MIDDLEWARE ===
+const authenticate = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ message: 'No token' });
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(401).json({ message: 'Invalid token' });
+    req.userId = decoded.id;
+    next();
+  });
+};
+
+// === MOCK WORKOUTS (FALLBACK) ===
 const workouts = {
   'Build Muscle': {
     beginner: {
@@ -121,35 +144,105 @@ const workouts = {
   }
 };
 
-// === GEMINI AI + FALLBACK (ADAPTIVE: NO EQUIPMENT IF REQUESTED OR HIGH BMI) ===
+// === AUTH ROUTES ===
+app.post('/api/register', [
+  body('email').isEmail(),
+  body('password').isLength({ min: 6 })
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ message: 'Invalid input' });
+
+  const { email, password } = req.body;
+  const hashed = crypto.createHash('sha256').update(password).digest('hex');
+
+  try {
+    const user = await User.create({ email, password: hashed, workouts: [], goal: {} });
+    const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, user: { email: user.email } });
+  } catch (err) {
+    res.status(400).json({ message: 'User exists' });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+  const hashed = crypto.createHash('sha256').update(password).digest('hex');
+  const user = await User.findOne({ email, password: hashed });
+  if (!user) return res.status(401).json({ message: 'Invalid credentials' });
+
+  const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { email: user.email, goal: user.goal } });
+});
+
+// === GOAL ROUTES ===
+app.post('/api/goal', authenticate, async (req, res) => {
+  const { goal, level, bodyPart, bmi, noEquipment } = req.body;
+  await User.updateOne(
+    { _id: req.userId },
+    { $set: { 'goal': { goal, level, bodyPart, bmi, noEquipment } } }
+  );
+  res.json({ message: 'Goal saved' });
+});
+
+app.get('/api/goal', authenticate, async (req, res) => {
+  const user = await User.findById(req.userId);
+  res.json(user.goal);
+});
+
+// === WORKOUT ROUTES ===
+app.post('/api/workout', authenticate, async (req, res) => {
+  const { text } = req.body;
+  await User.updateOne(
+    { _id: req.userId },
+    { $push: { workouts: { text, completed: false, timestamp: new Date().toISOString() } } }
+  );
+  res.json({ message: 'Logged' });
+});
+
+app.post('/api/complete', authenticate, async (req, res) => {
+  const { timestamp } = req.body;
+  await User.updateOne(
+    { _id: req.userId, 'workouts.timestamp': timestamp },
+    { $set: { 'workouts.$.completed': true } }
+  );
+  res.json({ message: 'Completed' });
+});
+
+app.get('/api/workouts', authenticate, async (req, res) => {
+  const user = await User.findById(req.userId);
+  res.json(user.workouts);
+});
+
+// === AI SUGGESTIONS + INSIGHTS ===
 app.post('/api/suggestions',
   [
-    body('goal').isIn(['Build Muscle', 'Build Endurance', 'Build Strength']).withMessage('Invalid goal'),
-    body('fitnessLevel').isIn(['beginner', 'intermediate', 'advanced']).withMessage('Invalid fitness level'),
-    body('bodyPart').isIn(['abs', 'chest', 'back', 'legs', 'arms', 'shoulders', 'glutes']).withMessage('Invalid body part'),
-    body('bmi').optional().isFloat({ min: 10, max: 50 }).withMessage('BMI must be between 10 and 50'),
-    body('noEquipment').optional().isBoolean().withMessage('noEquipment must be true or false')
+    body('goal').isIn(['Build Muscle', 'Build Endurance', 'Build Strength']),
+    body('fitnessLevel').isIn(['beginner', 'intermediate', 'advanced']),
+    body('bodyPart').isIn(['abs', 'chest', 'back', 'legs', 'arms', 'shoulders', 'glutes']),
+    body('bmi').optional().isFloat({ min: 10, max: 50 }),
+    body('noEquipment').optional().isBoolean()
   ],
+  authenticate,
   async (req, res) => {
     const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ message: 'Validation failed', errors: errors.array() });
-    }
+    if (!errors.isEmpty()) return res.status(400).json({ message: 'Validation failed' });
 
     const { goal, fitnessLevel, bodyPart, bmi, noEquipment } = req.body;
+    const user = await User.findById(req.userId);
+    const pastWorkouts = user.workouts.slice(-10).map(w => w.text).join(', ') || 'None';
+
+    const safeNoEquipment = bmi > 25 || noEquipment;
 
     const prompt = `
-Generate 5 ${fitnessLevel}-level ${goal} exercises for ${bodyPart}.
-BMI: ${bmi || 'unknown'}${noEquipment === true ? '. NO equipment allowed.' : ''}.
-${bmi > 25 ? 'Avoid high-impact. Prefer no-equipment.' : (noEquipment === true ? 'NO equipment.' : 'Equipment allowed if safe and effective.')}
-Return ONLY JSON array like: ["3x12 Push-Ups"]`;
+Suggest 5 ${fitnessLevel} ${goal} exercises for ${bodyPart}.
+BMI: ${bmi || 'unknown'}${safeNoEquipment ? '. NO equipment. Bodyweight only.' : ''}.
+Past workouts: ${pastWorkouts}
+Return ONLY JSON array: ["3x12 Push-Ups"]`;
 
     try {
       const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${process.env.GEMINI_API_KEY}`,
-        {
-          contents: [{ role: 'user', parts: [{ text: prompt }] }]
-        },
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`,
+        { contents: [{ role: 'user', parts: [{ text: prompt }] }] },
         { headers: { 'Content-Type': 'application/json' } }
       );
 
@@ -158,19 +251,48 @@ Return ONLY JSON array like: ["3x12 Push-Ups"]`;
       let suggestions = JSON.parse(text);
       if (!Array.isArray(suggestions)) suggestions = [suggestions];
 
-      res.json({ suggestions: suggestions.slice(0, 5) });
+      // === AI INSIGHTS (7+ workouts) ===
+      let insights = '';
+      if (user.workouts.length >= 7) {
+        const counts = {};
+        user.workouts.forEach(w => {
+          const cat = categorize(w.text);
+          counts[cat] = (counts[cat] || 0) + 1;
+        });
+        const max = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+        const min = Object.entries(counts).sort((a, b) => a[1] - b[1])[0];
+        insights = `You're strongest in ${max[0]} (${max[1]}x). ${min[0] === 'cardio' ? 'Add 1 run!' : 'Balance with ' + min[0]}`;
+      }
+
+      res.json({ suggestions: suggestions.slice(0, 5), insights: insights || null });
     } catch (err) {
       console.error('Gemini Error:', err.message);
-
-      // Fallback to mock data
-      const exercises = workouts[goal]?.[fitnessLevel]?.[bodyPart] || [];
-      const fallback = exercises.sort(() => 0.5 - Math.random()).slice(0, 5);
-      res.json({ suggestions: fallback, note: 'AI offline – using mock data' });
+      const fallback = workouts[goal][fitnessLevel][bodyPart].sort(() => 0.5 - Math.random()).slice(0, 5);
+      res.json({ suggestions: fallback, insights: null, note: 'AI offline' });
     }
   }
 );
 
-// Start Server
+// Helper: Categorize workout
+function categorize(text) {
+  const t = text.toLowerCase();
+  if (t.includes('push') || t.includes('bench') || t.includes('chest')) return 'chest';
+  if (t.includes('pull') || t.includes('row') || t.includes('back')) return 'back';
+  if (t.includes('squat') || t.includes('lunge') || t.includes('leg')) return 'legs';
+  if (t.includes('run') || t.includes('jog') || t.includes('cardio')) return 'cardio';
+  return 'other';
+}
+
+// === HEALTH CHECK ===
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    message: 'Backend is live!',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// === START SERVER ===
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/api/health`);
