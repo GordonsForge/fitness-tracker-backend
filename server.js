@@ -27,12 +27,12 @@ app.use(cors({
 
 app.use(express.json());
 
-// === MONGODB CONNECT WITH DEBUG ===
-mongoose.connect(MONGO_URI)
+// === MONGODB CONNECT WITH DB NAME FORCED ===
+const DB_NAME = MONGO_URI.split('/').pop().split('?')[0]; // Extract: gadafiaghor_db_user
+mongoose.connect(MONGO_URI, { dbName: DB_NAME })
   .then(() => {
-    const dbName = MONGO_URI.split('/').pop().split('?')[0];
     console.log('MongoDB Connected');
-    console.log(`Database: ${dbName}`);
+    console.log(`Using Database: ${DB_NAME}`);
   })
   .catch(err => {
     console.error('MongoDB Connection Failed:', err.message);
