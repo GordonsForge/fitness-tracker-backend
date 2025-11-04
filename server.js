@@ -250,7 +250,7 @@ app.post('/api/suggestions', authenticate, [
 
   try {
     const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
       { contents: [{ role: 'user', parts: [{ text: prompt }] }] }
     );
     let text = response.data.candidates[0].content.parts[0].text;
