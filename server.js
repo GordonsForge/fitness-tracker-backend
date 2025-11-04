@@ -256,7 +256,11 @@ app.post('/api/suggestions', authenticate, [
     let text = response.data.candidates[0].content.parts[0].text;
     text = text.replace(/```json|```/g, '').trim();
     let suggestions = JSON.parse(text);
-    res.json({ suggestions: Array.isArray(suggestions) ? suggestions.slice(0, 5) : [suggestions] });
+    const formatted = suggestions
+      .slice(0, 5)
+      .map(s => `${s.exercise} — ${s.sets_reps}`)
+      .join(', ');
+    res.json({ suggestions: formatted.split(', ') });
   } catch (err) {
     const fallback = (workouts[goal]?.[fitnessLevel]?.[bodyPart] || []).sort(() => 0.5 - Math.random()).slice(0, 5);
     res.json({ suggestions: fallback, note: 'AI offline' });
