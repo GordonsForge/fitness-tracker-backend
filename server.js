@@ -246,7 +246,11 @@ app.post('/api/suggestions', authenticate, [
   const user = await User.findById(req.userId);
   const past = user.workouts.slice(-5).map(w => w.text).join(', ') || 'None';
 
-  const prompt = `Suggest 5 ${fitnessLevel} ${goal} ${bodyPart} exercises. BMI: ${bmi || 'unknown'}${noEquipment ? '. Bodyweight only.' : ''}. Past: ${past}. Return JSON array.`;
+  const prompt = `You are a $10M fitness coach. Return a JSON array of exactly 5 exercises for ${fitnessLevel} level, goal: ${goal}, body part: ${bodyPart.toUpperCase()}. 
+BMI: ${bmi || 'unknown'}${noEquipment ? '. NO EQUIPMENT.' : ''}. Past workouts: ${past}.
+Each object MUST have: "exercise" (name), "sets_reps" (e.g. "3x10"), "muscle" (must be "${bodyPart}").
+Return ONLY valid JSON. No markdown. Example: [{"exercise":"Squats","sets_reps":"3x10","muscle":"legs"},...]
+`;
 
   try {
     const response = await axios.post(
@@ -257,8 +261,9 @@ app.post('/api/suggestions', authenticate, [
     text = text.replace(/```json|```/g, '').trim();
     let suggestions = JSON.parse(text);
     const formatted = suggestions
+      .filter(s => s.muscle?.toLowerCase() === bodyPart.toLowerCase())
       .slice(0, 5)
-      .map(s => `${s.exercise} — ${s.sets_reps}`)
+      .map(s => `${s.exercise} — ${s.sets_reps || '3x10'}`)
       .join(', ');
     res.json({ suggestions: formatted.split(', ') });
   } catch (err) {
